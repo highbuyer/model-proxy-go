@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Model Proxy</title>
+<style>
+/* ===== 1. 语义化色彩系统 ===== */
+:root{
+  --bg:#f5f6f8;--card:#fff;--t1:#111827;--t2:#6b7280;--t3:#9ca3af;
+  --blue:#4f46e5;--green:#059669;--red:#dc2626;--orange:#ea580c;--yellow:#ca8a04;--pink:#db2777;--cyan:#0891b2;--purple:#7c3aed;
+  --border:#e5e7eb;--hover:#f3f4f6;--code-bg:#1e1e2e;--code-fg:#cdd6f4;
+  --success-bg:#ecfdf5;--success-fg:#059669;--success-border:#a7f3d0;
+  --error-bg:#fef2f2;--error-fg:#dc2626;--error-border:#fecaca;
+  --degraded-bg:#fff7ed;--degraded-fg:#ea580c;--degraded-border:#fed7aa;
+  --processing-bg:#eef2ff;--processing-fg:#4f46e5;--processing-border:#c7d2fe;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.04);--shadow-md:0 4px 12px rgba(0,0,0,.06);--shadow-lg:0 12px 40px rgba(0,0,0,.12);
+  --radius-sm:6px;--radius:10px;--radius-lg:14px;
+}
+[data-theme="dark"]{
+  --bg:#0f1117;--card:#1a1d27;--t1:#f1f5f9;--t2:#94a3b8;--t3:#64748b;
+  --border:#293041;--hover:#222639;--code-bg:#0c0e14;
+  --success-bg:rgba(5,150,105,.12);--error-bg:rgba(220,38,38,.12);--degraded-bg:rgba(234,88,12,.12);--processing-bg:rgba(79,70,229,.12);
+  --success-border:rgba(5,150,105,.25);--error-border:rgba(220,38,38,.25);--degraded-border:rgba(234,88,12,.25);--processing-border:rgba(79,70,229,.25);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.2);--shadow-md:0 4px 12px rgba(0,0,0,.3);--shadow-lg:0 12px 40px rgba(0,0,0,.4);
+}
+@media(prefers-color-scheme:dark){:root:not([data-theme]){--bg:#0f1117;--card:#1a1d27;--t1:#f1f5f9;--t2:#94a3b8;--t3:#64748b;--border:#293041;--hover:#222639;--code-bg:#0c0e14;--success-bg:rgba(5,150,105,.12);--error-bg:rgba(220,38,38,.12);--degraded-bg:rgba(234,88,12,.12);--processing-bg:rgba(79,70,229,.12);--success-border:rgba(5,150,105,.25);--error-border:rgba(220,38,38,.25);--degraded-border:rgba(234,88,12,.25);--processing-border:rgba(79,70,229,.25);--shadow-sm:0 1px 2px rgba(0,0,0,.2);--shadow-md:0 4px 12px rgba(0,0,0,.3);--shadow-lg:0 12px 40px rgba(0,0,0,.4)}}
+/* ===== 2. 流式排版 ===== */
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:var(--t1);font-size:14px;line-height:1.6;transition:background .3s,color .3s;-webkit-font-smoothing:antialiased}
+/* ===== 3. 毛玻璃粘性页头 ===== */
+.app-header{position:sticky;top:0;z-index:100;display:flex;align-items:center;justify-content:center;gap:20px;padding:12px 24px;background:color-mix(in srgb,var(--bg) 78%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:1px solid var(--border);max-width:95vw;margin:0 auto;border-radius:0 0 var(--radius-lg) var(--radius-lg)}
+.hdr-left{flex-shrink:0;color:var(--t1)}
+.hdr-right{flex-shrink:0;display:flex;gap:8px;align-items:center;margin-left:auto}
+.theme-btn{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:5px 11px;cursor:pointer;font-size:15px;transition:all .2s;box-shadow:var(--shadow-sm)}
+.theme-btn:hover{transform:translateY(-1px);box-shadow:var(--shadow-md)}
+.conn{font-size:12px;display:flex;align-items:center;gap:6px;color:var(--t2)}
+.conn .dot{width:7px;height:7px;border-radius:50%}
+.conn.on .dot{background:var(--green);box-shadow:0 0 6px var(--green)}
+.conn.off .dot{background:var(--red);animation:pulse 1.2s infinite}
+.nav{display:flex;gap:4px}
+.nav-btn{padding:7px 22px;border:none;border-radius:var(--radius);cursor:pointer;font-size:13px;font-weight:500;background:transparent;color:var(--t2);transition:all .2s}
+.nav-btn:hover{color:var(--t1);background:var(--hover)}
+.nav-btn.active{background:var(--blue);color:#fff;box-shadow:0 2px 8px rgba(79,70,229,.3)}
+.container{max-width:95vw;margin:0 auto;padding:0 24px 60px}
+/* Stats */
+.stats-bar{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px 18px;min-width:95px;flex:1;box-shadow:var(--shadow-sm);transition:transform .2s,box-shadow .2s}
+.stat:hover{transform:translateY(-1px);box-shadow:var(--shadow-md)}
+.stat .n{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.stat .l{font-size:12px;color:var(--t3);margin-top:2px;font-weight:500}
+/* Toolbar */
+.toolbar{display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap}
+.toolbar input{flex:1;min-width:140px;padding:8px 14px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;outline:none;background:var(--card);color:var(--t1);box-shadow:var(--shadow-sm);transition:all .2s}
+.toolbar input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(79,70,229,.15)}
+.filters{display:flex;gap:4px;flex-wrap:wrap}
+.fbtn{padding:5px 12px;border:1px solid var(--border);border-radius:20px;cursor:pointer;font-size:12px;background:var(--card);color:var(--t2);transition:all .2s;white-space:nowrap;font-weight:500}
+.fbtn:hover{background:var(--hover);transform:translateY(-1px)}
+.fbtn.active{background:var(--blue);color:#fff;border-color:var(--blue);box-shadow:0 2px 6px rgba(79,70,229,.25)}
+.fbtn .cnt{margin-left:2px;opacity:.7;font-size:10px}
+.fbtn .cnt::before{content:'('}.fbtn .cnt::after{content:')'}
+/* Layout */
+.split{display:flex;gap:12px}
+.main-panel{flex:1;min-width:0}
+.detail-panel{flex:0 0 520px;background:var(--card);border-radius:var(--radius-lg);border:1px solid var(--border);box-shadow:var(--shadow-md);overflow:auto;flex-direction:column;display:none;resize:both;min-width:380px;max-width:80vw;min-height:300px;max-height:80vh;will-change:transform}
+.detail-panel.show{display:flex;view-transition-name:detail-panel}
+::view-transition-old(detail-panel){animation:vtOut .2s cubic-bezier(.4,0,.2,1)}
+::view-transition-new(detail-panel){animation:vtIn .25s .05s cubic-bezier(.4,0,.2,1)}
+@keyframes vtOut{to{opacity:0;transform:translateX(12px) scale(.98)}}
+@keyframes vtIn{from{opacity:0;transform:translateX(-8px) scale(.99)}to{opacity:1;transform:translateX(0) scale(1)}}
+@keyframes slideIn{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:translateX(0)}}
+.detail-hd{padding:13px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0;background:var(--hover)}
+.detail-hd h3{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px}
+.detail-close{background:none;border:none;font-size:18px;cursor:pointer;color:var(--t3);padding:2px 6px;border-radius:var(--radius-sm);transition:all .15s}
+.detail-close:hover{background:var(--border);color:var(--t1)}
+.detail-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--card)}
+.dtab{padding:9px 16px;border:none;background:none;cursor:pointer;font-size:12px;font-weight:500;color:var(--t2);border-bottom:2px solid transparent;transition:all .2s}
+.dtab:hover{color:var(--t1)}
+.dtab.active{color:var(--blue);border-bottom-color:var(--blue)}
+.detail-body{flex:1;overflow-y:visible;padding:16px;min-height:0;scroll-behavior:smooth}
+/* Request list */
+.rlist{display:flex;flex-direction:column;gap:3px}
+.ri{background:var(--card);border:1px solid var(--border);padding:12px 16px;border-radius:var(--radius);cursor:pointer;display:flex;align-items:center;gap:14px;transition:all .18s;box-shadow:var(--shadow-sm)}
+.ri:hover{background:var(--hover);transform:translateX(2px);border-color:var(--blue)}
+.ri.active{border-color:var(--blue);box-shadow:0 0 0 2px rgba(79,70,229,.2);background:rgba(79,70,229,.03)}
+.ri-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.ri-dot.processing{background:var(--blue);animation:pulse 1.5s infinite}
+.ri-dot.success{background:var(--green)}
+.ri-dot.error{background:var(--red)}
+.ri-dot.degraded{background:var(--orange)}
+.ri-dot.intercepted{background:var(--pink)}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.85)}}
+.ri-info{flex:1;min-width:0}
+.ri-title{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ri-meta{font-size:12px;color:var(--t3);margin-top:2px;display:flex;gap:12px}
+.ri-right{flex-shrink:0;text-align:right}
+.ri-dur{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+.ri-dur.fast{color:var(--green)}.ri-dur.med{color:var(--orange)}.ri-dur.slow{color:var(--red)}
+.ri-badges{display:flex;gap:3px;margin-top:3px;justify-content:flex-end}
+.badge{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.badge.sse{background:var(--processing-bg);color:var(--processing-fg)}
+.badge.tool{background:var(--degraded-bg);color:var(--degraded-fg)}
+.badge.err{background:var(--error-bg);color:var(--error-fg)}
+/* Skeleton */
+.skeleton{background:linear-gradient(90deg,var(--hover) 25%,var(--border) 50%,var(--hover) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:var(--radius-sm)}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.sk-row{height:50px;margin-bottom:3px;border-radius:var(--radius)}
+/* Empty state */
+.empty{padding:70px 20px;text-align:center;color:var(--t3)}
+.empty-icon{font-size:44px;margin-bottom:10px;opacity:.4}
+.empty p{font-size:14px}
+/* Detail content */
+.kv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:16px}
+.kv{background:var(--hover);padding:10px 14px;border-radius:var(--radius-sm);transition:transform .15s}
+.kv:hover{transform:translateY(-1px)}
+.kv .k{font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.6px;font-weight:600}
+.kv .v{font-size:14px;font-weight:600;margin-top:3px;word-break:break-all}
+/* Status tags */
+.status-tag{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:.3px}
+.status-tag.success{background:var(--success-bg);color:var(--success-fg);border:1px solid var(--success-border)}
+.status-tag.error{background:var(--error-bg);color:var(--error-fg);border:1px solid var(--error-border)}
+.status-tag.degraded{background:var(--degraded-bg);color:var(--degraded-fg);border:1px solid var(--degraded-border)}
+.status-tag.processing{background:var(--processing-bg);color:var(--processing-fg);border:1px solid var(--processing-border)}
+/* Timeline */
+.timeline{display:flex;height:22px;border-radius:var(--radius-sm);overflow:hidden;margin-bottom:16px;background:var(--hover);box-shadow:inset 0 1px 2px rgba(0,0,0,.06)}
+.tseg{display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;min-width:2px;transition:all .2s;cursor:default;text-transform:uppercase;letter-spacing:.4px}
+/* Log entries */
+.log-entry{font-size:12px;font-family:'SF Mono','Cascadia Code','Consolas',monospace;padding:5px 0;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:flex-start;transition:background .15s}
+.log-entry:hover{background:var(--hover)}
+.log-time{color:var(--t3);flex-shrink:0;width:68px;font-size:10px;font-variant-numeric:tabular-nums}
+.log-phase{padding:1px 8px;border-radius:3px;font-size:10px;font-weight:700;flex-shrink:0;min-width:52px;text-align:center;line-height:1.9}
+.log-phase.receive{background:rgba(79,70,229,.15);color:var(--blue)}
+.log-phase.proxy{background:rgba(8,145,178,.12);color:var(--cyan)}
+.log-phase.stream{background:rgba(5,150,105,.15);color:var(--green)}
+.log-phase.complete{background:rgba(5,150,105,.18);color:var(--green)}
+.log-phase.error{background:rgba(220,38,38,.12);color:var(--red)}
+.log-msg{flex:1;word-break:break-word}
+.log-detail{color:var(--t3);font-size:11px;margin-top:2px}
+/* Code block */
+.code-block{display:flex;flex-direction:column;background:var(--code-bg);color:var(--code-fg);padding:14px;border-radius:var(--radius-sm);font-family:'Cascadia Code','SF Mono','Fira Code','Consolas',monospace;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-all;overflow-wrap:break-word;overflow-x:hidden;overflow-y:auto;max-height:70vh;position:relative;font-variant-ligatures:common-ligatures;font-feature-settings:"calt","liga"}
+.code-block .jk{color:#93c5fd}.code-block .js{color:#86efac}.code-block .jn{color:#fdba74}.code-block .jb{color:#d8b4fe}.code-block .jnl{color:#fda4af}
+.copy-btn{order:-1;position:sticky;top:8px;align-self:flex-end;padding:4px 10px;font-size:10px;font-weight:500;cursor:pointer;border:1px solid rgba(255,255,255,.2);border-radius:var(--radius-sm);background:var(--code-bg);color:rgba(255,255,255,.75);transition:all .15s;z-index:10;margin-bottom:-30px}
+.copy-btn:hover{background:rgba(255,255,255,.15);color:#fff}
+/* Config */
+.config-wrap,.logs-wrap{display:none}
+.config-wrap.show,.logs-wrap.show{display:block}
+.btn{padding:7px 16px;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:12px;font-weight:600;transition:all .2s}
+.btn-primary{background:var(--blue);color:#fff}.btn-primary:hover{opacity:.9;transform:translateY(-1px);box-shadow:0 2px 8px rgba(79,70,229,.25)}
+.btn-danger{background:var(--red);color:#fff}.btn-danger:hover{opacity:.9;transform:translateY(-1px)}
+.btn-sm{padding:4px 10px;font-size:11px}
+table{width:100%;border-collapse:collapse;margin-top:10px;border-radius:var(--radius);overflow:hidden}
+th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--border);font-size:13px}
+th{background:var(--hover);font-weight:600;color:var(--t2);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+tr{transition:background .15s}
+tr:hover{background:var(--hover)}
+.proxy-url{font-family:'SF Mono','Cascadia Code',monospace;font-size:12px;background:var(--hover);padding:4px 10px;border-radius:var(--radius-sm);word-break:break-all}
+.hint-box{background:rgba(234,179,8,.06);border:1px solid rgba(234,179,8,.25);border-radius:var(--radius);padding:10px 16px;margin-bottom:14px;font-size:13px;color:var(--t1);line-height:1.6}
+.modal{display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.45);align-items:center;justify-content:center;backdrop-filter:blur(2px)}
+.modal.show{display:flex}
+.modal-content{background:var(--card);padding:24px;border-radius:var(--radius-lg);width:440px;box-shadow:var(--shadow-lg);animation:modalIn .2s cubic-bezier(.4,0,.2,1)}
+@keyframes modalIn{from{opacity:0;transform:scale(.96) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
+.modal-content h3{font-size:17px;margin-bottom:18px;font-weight:700}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;margin-bottom:4px;font-weight:600;font-size:12px;color:var(--t2);text-transform:uppercase;letter-spacing:.4px}
+.form-group input{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13px;outline:none;background:var(--card);color:var(--t1);transition:all .2s}
+.form-group input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(79,70,229,.12)}
+.form-group small{color:var(--t3);font-size:11px;display:block;margin-top:4px}
+.msg-section{margin-bottom:18px}
+.msg-section .ms-title{font-weight:700;font-size:11px;color:var(--t2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.7px}
+/* ===== 4. View Transitions ===== */
+@media(prefers-reduced-motion:no-preference){
+::view-transition-old(root),::view-transition-new(root){animation-duration:.25s;animation-timing-function:cubic-bezier(.4,0,.2,1)}
+::view-transition-old(root){animation-name:fadeOut}::view-transition-new(root){animation-name:fadeIn}
+@keyframes fadeOut{to{opacity:0;transform:scale(.995)}}@keyframes fadeIn{from{opacity:0;transform:scale(1.005)}to{opacity:1;transform:scale(1)}}
+}
+@media(max-width:960px){.split{flex-direction:column}.detail-panel{flex:1;max-height:none;min-width:0;max-width:100vw}.detail-panel.show{position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;width:100%!important;height:100%!important;max-width:100vw;max-height:100vh;border-radius:0;resize:none;animation:slideUp .25s cubic-bezier(.4,0,.2,1)}@keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}}
+@media(max-width:600px){.app-header{flex-wrap:wrap;gap:8px;padding:8px 12px}.app-header .nav{order:3;width:100%;justify-content:center}.stat{min-width:70px;padding:8px 10px}.stat .n{font-size:17px}.filters{width:100%}.fbtn{padding:4px 8px;font-size:11px}.toolbar{flex-direction:column}.toolbar input{width:100%}.detail-panel.show{animation:none}}
+</style>
+</head>
+<body>
+<div class="app-header" id="appHeader">
+  <div class="hdr-left"><strong style="font-size:16px;letter-spacing:-0.4px">Model Proxy</strong></div>
+  <div class="nav">
+    <button class="nav-btn active" data-page="logs">请求日志</button>
+    <button class="nav-btn" data-page="config">代理配置</button>
+  </div>
+  <div class="hdr-right">
+    <span class="conn on" id="conn"><span class="dot"></span><span>已连接</span></span>
+    <button class="theme-btn" id="themeBtn" title="切换主题">🌙</button>
+  </div>
+</div>
+<div class="container">
+  <!-- === 请求日志 === -->
+  <div class="logs-wrap show" id="logsPage">
+    <div class="stats-bar">
+      <div class="stat"><div class="n" id="sT">0</div><div class="l">总请求</div></div>
+      <div class="stat"><div class="n" style="color:var(--green)" id="sS">0</div><div class="l">成功</div></div>
+      <div class="stat"><div class="n" style="color:var(--orange)" id="sD">0</div><div class="l">降级</div></div>
+      <div class="stat"><div class="n" style="color:var(--red)" id="sE">0</div><div class="l">错误</div></div>
+      <div class="stat"><div class="n" style="color:var(--purple)" id="sP">0</div><div class="l">处理中</div></div>
+      <div class="stat"><div class="n" id="sA">-</div><div class="l">平均耗时(ms)</div></div>
+      <div class="stat"><div class="n" id="sF">-</div><div class="l">平均 TTFT(ms)</div></div>
+      <div class="stat" style="cursor:pointer;background:var(--blue);color:#fff;position:relative" id="exportBtn" onclick="exportTraining()"><div class="n" style="color:#fff;font-size:16px">导出</div><div class="l" style="color:rgba(255,255,255,.7)">训练数据 JSONL</div><div style="font-size:10px;color:rgba(255,255,255,.5);margin-top:2px" id="exportHint"></div></div>
+    </div>
+    <div class="toolbar">
+      <input type="text" id="searchIn" placeholder="搜索 RequestId / 模型 / 路径..." aria-label="搜索请求日志" />
+      <div class="filters" id="statusFilters">
+        <button class="fbtn active" data-status="all">全部<span class="cnt" id="cA">0</span></button>
+        <button class="fbtn" data-status="success">成功<span class="cnt" id="cS">0</span></button>
+        <button class="fbtn" data-status="degraded">降级<span class="cnt" id="cD">0</span></button>
+        <button class="fbtn" data-status="error">错误<span class="cnt" id="cE">0</span></button>
+        <button class="fbtn" data-status="processing">处理中<span class="cnt" id="cP">0</span></button>
+      </div>
+      <div class="filters" id="timeFilters">
+        <button class="fbtn" data-time="all">全部时间</button>
+        <button class="fbtn active" data-time="today">今天</button>
+        <button class="fbtn" data-time="2d">2天</button>
+        <button class="fbtn" data-time="7d">7天</button>
+      </div>
+    </div>
+    <div class="split">
+      <div class="main-panel"><div class="skeleton-list" id="skeletonList"></div><div class="empty" id="emptyState" style="display:none"><div class="empty-icon">📡</div><p>暂无匹配请求</p></div><div class="rlist" id="rlist"></div></div>
+      <div class="detail-panel" id="detail">
+        <div class="detail-hd"><h3 id="dTitle">选择一条请求</h3><button class="detail-close" onclick="closeDetail()">&times;</button></div>
+        <div class="detail-tabs">
+          <button class="dtab active" data-tab="summary">概要</button>
+          <button class="dtab" data-tab="logs">日志</button>
+          <button class="dtab" data-tab="request">请求</button>
+          <button class="dtab" data-tab="response">响应</button>
+          <button class="dtab" data-tab="payload">Payload</button>
+        </div>
+        <div class="detail-body" id="detailBody"><div class="empty">点击左侧请求查看详情</div></div>
+      </div>
+    </div>
+  </div>
+  <!-- === 代理配置 === -->
+  <div class="config-wrap" id="configPage">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2 style="font-size:18px">代理配置</h2>
+      <button class="btn btn-primary" onclick="openAddModal()">新增代理配置</button>
+    </div>
+    <div class="hint-box">将 LLM 工具的 <b>API Base URL</b> 改为表中的<b>代理 URL</b>，请求自动转发并记录日志。</div>
+    <table id="configTable"><thead><tr><th>ID</th><th>标识</th><th>名称</th><th>目标主机</th><th>代理 URL</th><th>操作</th></tr></thead><tbody></tbody></table>
+  </div>
+</div>
+<!-- 配置弹窗 -->
+<div class="modal" id="configModal">
+  <div class="modal-content">
+    <h3 id="modalTitle">新增代理配置</h3>
+    <form id="configForm">
+      <input type="hidden" id="cfgId">
+      <div class="form-group"><label for="cfgCode">代理标识</label><input type="text" id="cfgCode" required readonly style="background:var(--hover);color:var(--t3)"></div>
+      <div class="form-group"><label for="cfgName">代理名称</label><input type="text" id="cfgName" required></div>
+      <div class="form-group"><label for="cfgTarget">目标主机</label><input type="text" id="cfgTarget" required placeholder="api.deepseek.com"><small>API 服务地址，https:// 自动补齐</small></div>
+      <button type="submit" class="btn btn-primary">保存</button>
+    </form>
+  </div>
+</div>
+
+<script>
+// ===== Theme =====
+(function(){const saved=localStorage.getItem('mp_theme');const sys=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';const t=saved||sys;if(!saved&&sys==='light')return;document.documentElement.setAttribute('data-theme',t);el('themeBtn').textContent=t==='dark'?'☀️':'🌙'})();
+el('themeBtn').onclick=()=>{const t=document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',t);localStorage.setItem('mp_theme',t);el('themeBtn').textContent=t==='dark'?'☀️':'🌙'};
+
+// ===== State =====
+let reqs=[],rmap={},selId=null,payload=null,curStatus='all',curTab='summary',curTime='today',curPage='logs';
+
+// ===== Init =====
+function showSkeleton(){let h='';for(let i=0;i<8;i++)h+=`<div class="skeleton sk-row" style="width:${90+Math.random()*10}%"></div>`;el('skeletonList').innerHTML=h;el('skeletonList').style.display='block';el('emptyState').style.display='none'}
+function hideSkeleton(){el('skeletonList').style.display='none'}
+async function init(){showSkeleton();await Promise.all([loadList(),loadStats()]);hideSkeleton();connectSSE()}
+function loadList(){return fetch('/api/log/list?limit=200').then(r=>r.json()).then(d=>{reqs=d.data||[];reqs.forEach(s=>rmap[s.requestId]=s);renderList();updateCnt()})}
+function loadStats(){return fetch('/api/stats').then(r=>r.json()).then(s=>{el('sT').textContent=s.totalRequests||0;el('sS').textContent=s.successCount||0;el('sD').textContent=s.degradedCount||0;el('sE').textContent=s.errorCount||0;el('sP').textContent=s.processingCount||0;el('sA').textContent=s.avgResponseTime||'-';el('sF').textContent=s.avgTtft||'-'})}
+function el(id){return document.getElementById(id)}
+
+// ===== SSE =====
+let es;
+function connectSSE(){
+  if(es)try{es.close()}catch(e){}
+  es=new EventSource('/api/logs/stream');
+  es.addEventListener('summary',e=>{
+    const s=JSON.parse(e.data);const idx=reqs.findIndex(r=>r.requestId===s.requestId);
+    if(idx>=0)reqs[idx]=s;else reqs.unshift(s);
+    rmap[s.requestId]=s;
+    renderList();updateCnt();loadStats();
+    if(selId===s.requestId){renderSummaryTab(s);if(curTab==='logs')renderLogsTab()}
+  });
+  es.onopen=()=>{const c=el('conn');c.className='conn on';c.querySelector('span').textContent='已连接'};
+  es.onerror=()=>{const c=el('conn');c.className='conn off';c.querySelector('span').textContent='重连中...';setTimeout(connectSSE,3000)};
+}
+
+// ===== Render List =====
+function renderList(){
+  const listEl=el('rlist');let f=[...reqs];
+  if(curTime!=='all'){const now=Date.now();const cut={today:now-now%86400000+new Date().getTimezoneOffset()*60000,'2d':now-2*86400000,'7d':now-7*86400000}[curTime]||0;f=f.filter(r=>r.startTime>=cut)}
+  if(curStatus!=='all')f=f.filter(r=>r.status===curStatus);
+  const q=(el('searchIn').value||'').toLowerCase();
+  if(q)f=f.filter(r=>(r.requestId||'').includes(q)||(r.model||'').toLowerCase().includes(q)||(r.path||'').toLowerCase().includes(q));
+  hideSkeleton();if(!f.length){el('emptyState').style.display='block';return}el('emptyState').style.display='none';
+  if(f.length>200)f=f.slice(0,200); // DOM cap: 最多渲染 200 条
+  listEl.innerHTML=f.map(r=>{
+    const ac=r.requestId===selId;
+    const dur=r.endTime?(r.endTime-r.startTime):(Date.now()-r.startTime);
+    const ds=(dur/1000).toFixed(1)+'s';
+    const dc=dur<2000?'fast':dur<8000?'med':'slow';
+    const b=[];if(r.stream)b.push('<span class="badge sse">SSE</span>');if(r.toolCount)b.push('<span class="badge tool">T:'+r.toolCount+'</span>');if(r.status==='error')b.push('<span class="badge err">ERR</span>');
+    const model=r.model||'?';
+    return `<div class="ri${ac?' active':''}" data-rid="${r.requestId}">
+      <div class="ri-dot ${r.status}"></div>
+      <div class="ri-info"><div class="ri-title">${esc(model)} <span style="font-weight:400;font-size:11px;color:var(--t3)">· ${r.method}</span></div><div class="ri-meta"><span>${esc(r.path)}</span><span>${fmtN(r.responseChars)} chars</span>${r.ttft?`<span>TTFT ${r.ttft}ms</span>`:''}</div></div>
+      <div class="ri-right"><div class="ri-dur ${dc}">${ds}</div><div class="ri-badges">${b.join('')}</div></div></div>`;
+  }).join('');
+}
+function updateCnt(){const f=[...reqs];const map={all:f.length,success:0,degraded:0,error:0,processing:0};f.forEach(r=>{if(map[r.status]!==undefined)map[r.status]++});['A','S','D','E','P'].forEach(k=>{const e=el('c'+k);if(e)e.textContent=map[{A:'all',S:'success',D:'degraded',E:'error',P:'processing'}[k]]||0})}
+
+// ===== Detail =====
+el('rlist').addEventListener('click',e=>{const ri=e.target.closest('[data-rid]');if(ri)selectReq(ri.dataset.rid)});
+async function selectReq(id){selId=id;renderList();const s=rmap[id];el('dTitle').textContent=s?s.model||s.path||id:id;if(document.startViewTransition){document.startViewTransition(()=>el('detail').classList.add('show'))}else{el('detail').classList.add('show')}if(s)renderSummaryTab(s);try{const r=await fetch('/api/log/payload/'+id);if(r.ok)payload=await r.json();else payload=null}catch(e){payload=null};switchTab(curTab)}
+function closeDetail(){selId=null;payload=null;if(document.startViewTransition){document.startViewTransition(()=>el('detail').classList.remove('show'))}else{el('detail').classList.remove('show')}renderList()}
+
+function switchTab(tab){
+  curTab=tab;document.querySelectorAll('.dtab').forEach(t=>t.classList.remove('active'));document.querySelector(`.dtab[data-tab="${tab}"]`)?.classList.add('active');
+  if(tab==='summary')renderSummaryTab(rmap[selId]);
+  else if(tab==='logs')renderLogsTab();
+  else if(tab==='request')renderRequestTab();
+  else if(tab==='response')renderResponseTab();
+  else if(tab==='payload')renderPayloadTab();
+}
+el('detail').querySelector('.detail-tabs').addEventListener('click',e=>{if(e.target.classList.contains('dtab'))switchTab(e.target.dataset.tab)});
+
+// ===== Summary Tab =====
+function renderSummaryTab(s){
+  const body=el('detailBody');if(!s){body.innerHTML='<div class="empty">加载中...</div>';return}
+  let h=renderTimeline(s);
+  h+='<div class="kv-grid">';
+  const st=s.status||'';h+=kv('状态',`<span class="status-tag ${st}">${st.toUpperCase()}</span>`);
+  h+=kv('耗时',s.duration?((s.duration/1000).toFixed(2)+'s'):'...');
+  h+=kv('TTFT',s.ttft?s.ttft+'ms':'-');
+  h+=kv('状态码',s.statusCode||'-');
+  h+=kv('响应字符',fmtN(s.responseChars));
+  h+=kv('请求字符',fmtN(s.requestChars));
+  h+=kv('方法',s.method);
+  h+=kv('模型',esc(s.model||'-'));
+  h+=kv('路径',esc(s.path||'-'));
+  h+=kv('流式',s.stream?'是':'否');
+  h+=kv('RequestId',`<code style="font-size:10px">${s.requestId}</code>`);
+  h+=kv('目标',esc((s.targetUrl||'').substring(0,60)));
+  h+='</div>';
+  body.innerHTML=h;
+}
+function renderTimeline(s){
+  if(!s)return'';
+  const start=s.startTime,end=s.endTime||Date.now(),dur=end-start;if(dur<=0)return'';
+  const phases=[{p:'receive',c:'var(--blue)',d:20},{p:'proxy',c:'var(--cyan)',d:60},{p:'stream',c:'var(--green)',d:15},{p:'complete',c:undefined,d:5}];
+  return '<div class="timeline">'+phases.map(ph=>`<div class="tseg" style="flex:${ph.d};background:${ph.c||'var(--t3)'}" title="${ph.p}">${ph.p}</div>`).join('')+'</div>';
+}
+function kv(k,v){return `<div class="kv"><div class="k">${k}</div><div class="v">${v}</div></div>`}
+
+// ===== Logs Tab =====
+function renderLogsTab(){
+  const body=el('detailBody');
+  if(!payload||!payload.logs||!payload.logs.length){body.innerHTML='<div class="empty">暂无日志事件</div>';return}
+  body.innerHTML=payload.logs.map(l=>`<div class="log-entry"><span class="log-time">${new Date(l.timestamp).toLocaleTimeString()}</span><span class="log-phase ${l.phase}">${l.phase}</span><span class="log-msg">${esc(l.message)}${l.details?`<div class="log-detail">${esc(l.details)}</div>`:''}</span></div>`).join('');
+}
+
+// ===== Request Tab =====
+function renderRequestTab(){
+  const body=el('detailBody');if(!payload){body.innerHTML='<div class="empty">暂无请求数据</div>';return}
+  let h=`<div style="margin-bottom:10px;font-size:12px;color:var(--t2)"><b>Target:</b> ${esc(payload.targetUrl)}</div>`;
+  if(payload.origHeaders){h+=`<div class="msg-section"><div class="ms-title">请求头</div><div class="code-block"><button class="copy-btn" data-raw="${escAttr(JSON.stringify(payload.origHeaders,null,2))}">复制</button>${syntaxHL(JSON.stringify(payload.origHeaders,null,2))}</div></div>`}
+  const MAX_SHOW=100000;
+  if(payload.origBody){const full=payload.origBody;const show=full.length>MAX_SHOW?full.substring(0,MAX_SHOW)+'\n\n... [前面仅展示前100K字符，完整数据点右侧复制按钮]':full;h+=`<div class="msg-section"><div class="ms-title">请求体 (${fmtN(full.length)} chars)</div><div class="code-block"><button class="copy-btn" data-raw="${escAttr(full)}">复制全文</button>${esc(show)}</div></div>`}
+  body.innerHTML=h||'<div class="empty">暂无请求数据</div>';
+}
+
+// ===== Response Tab =====
+function renderResponseTab(){
+  const body=el('detailBody');if(!payload){body.innerHTML='<div class="empty">暂无响应数据</div>';return}
+  let h=`<div class="kv-grid">${kv('状态码',payload.statusCode)}${kv('耗时',payload.duration+'ms')}</div>`;
+  const MAX_SHOW=100000;
+  if(payload.responseBody){const full=payload.responseBody;const show=full.length>MAX_SHOW?full.substring(0,MAX_SHOW)+'\n\n... [前面仅展示前100K字符，完整数据点右侧复制按钮]':full;h+=`<div class="msg-section"><div class="ms-title">响应体 (${fmtN(full.length)} chars)</div><div class="code-block"><button class="copy-btn" data-raw="${escAttr(full)}">复制全文</button>${esc(show)}</div></div>`}
+  body.innerHTML=h||'<div class="empty">暂无响应数据</div>';
+}
+
+// ===== Payload Tab =====
+function renderPayloadTab(){
+  const body=el('detailBody');if(!payload){body.innerHTML='<div class="empty">暂无数据</div>';return}
+  const M=50000;
+  const obj={requestId:payload.requestId,method:payload.method,path:payload.path,targetUrl:payload.targetUrl,statusCode:payload.statusCode,duration:payload.duration,
+    origHeaders:payload.origHeaders,targetHeaders:payload.targetHeaders,origBody:payload.origBody?(payload.origBody.length>M?payload.origBody.substring(0,M)+'...[截断，完整数据点右侧复制按钮]':payload.origBody):null,targetBody:payload.targetBody?(payload.targetBody.length>M?payload.targetBody.substring(0,M)+'...[截断]':payload.targetBody):null,responseBody:payload.responseBody?(payload.responseBody.length>M?payload.responseBody.substring(0,M)+'...[截断]':payload.responseBody):null,logsCount:(payload.logs||[]).length};
+  body.innerHTML=`<div class="code-block"><button class="copy-btn" data-raw="${escAttr(JSON.stringify(payload,null,2))}">复制完整JSON</button>${syntaxHL(JSON.stringify(obj,null,2))}</div>`;
+}
+
+// Copy button delegation
+el('detailBody').addEventListener('click',e=>{const btn=e.target.closest('.copy-btn');if(!btn)return;const text=btn.dataset.raw;if(!text)return;if(navigator.clipboard){navigator.clipboard.writeText(text)}else{const ta=document.createElement('textarea');ta.value=text;ta.style.cssText='position:fixed;left:-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta)}btn.textContent='已复制';setTimeout(()=>btn.textContent='复制',1200)});
+
+// ===== Filters =====
+el('statusFilters').addEventListener('click',e=>{const btn=e.target.closest('.fbtn');if(!btn||!btn.dataset.status)return;curStatus=btn.dataset.status;document.querySelectorAll('#statusFilters .fbtn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderList()});
+el('timeFilters').addEventListener('click',e=>{const btn=e.target.closest('.fbtn');if(!btn||!btn.dataset.time)return;curTime=btn.dataset.time;document.querySelectorAll('#timeFilters .fbtn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderList();updateCnt()});
+el('searchIn').addEventListener('input',renderList);
+
+// ===== Export =====
+function exportTraining(){
+  const status=curStatus==='all'?'success':curStatus;
+  const now=Date.now();const cut={today:now-86400000,'2d':now-172800000,'7d':now-604800000}[curTime]||0;
+  const since=curTime==='all'?'':String(cut);
+  const link=document.createElement('a');
+  link.href=`/api/export?status=${status}&since=${since}&limit=500`;
+  link.download='';
+  document.body.appendChild(link);link.click();document.body.removeChild(link);
+  localStorage.setItem('mp_last_export',new Date().toISOString());
+  localStorage.setItem('mp_last_export_count',String(reqs.filter(r=>r.status===status&&r.startTime>=cut).length));
+  updateExportHint();
+}
+function updateExportHint(){
+  const last=localStorage.getItem('mp_last_export');if(!last)return;
+  const ago=Math.floor((Date.now()-new Date(last).getTime())/60000);
+  const count=localStorage.getItem('mp_last_export_count')||'?';
+  const el=el('exportHint');if(el)el.textContent=`上次: ${ago<1?'刚刚':ago+'分钟前'} · ${count} 条`;
+}
+setTimeout(updateExportHint,2000);
+
+// ===== Keyboard =====
+document.addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key==='k'){e.preventDefault();el('searchIn').focus();return}
+  if(e.key==='Escape'){if(document.activeElement===el('searchIn')){el('searchIn').value='';el('searchIn').blur();renderList()}else{closeDetail()}return}
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();const f=[...reqs].filter(r=>{if(curTime!=='all'){const now=Date.now();const cut={today:now-now%86400000+new Date().getTimezoneOffset()*60000,'2d':now-2*86400000,'7d':now-7*86400000}[curTime]||0;if(r.startTime<cut)return false}if(curStatus!=='all'&&r.status!==curStatus)return false;return true});if(!f.length)return;const ci=selId?f.findIndex(r=>r.requestId===selId):-1;let ni;if(e.key==='ArrowDown')ni=ci<f.length-1?ci+1:0;else ni=ci>0?ci-1:f.length-1;selectReq(f[ni].requestId);const it=document.querySelector(`[data-rid="${f[ni].requestId}"]`);if(it)it.scrollIntoView({block:'nearest'})}
+});
+
+// ===== Nav =====
+document.querySelector('.nav').addEventListener('click',e=>{const btn=e.target.closest('.nav-btn');if(!btn)return;document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');curPage=btn.dataset.page;el('logsPage').classList.toggle('show',curPage==='logs');el('configPage').classList.toggle('show',curPage==='config');if(curPage==='config')loadConfigs()});
+
+// ===== Config =====
+function loadConfigs(){fetch('/api/config/list').then(r=>r.json()).then(data=>{el('configTable').querySelector('tbody').innerHTML=(data||[]).map(c=>{const purl=location.origin+'/api/'+c.proxyCode;return `<tr data-id="${c.id}" data-code="${escAttr(c.proxyCode)}" data-name="${escAttr(c.proxyName)}" data-target="${escAttr(c.targetUrl)}"><td>${c.id}</td><td>${esc(c.proxyCode)}</td><td>${esc(c.proxyName)}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.targetUrl)}</td><td><span class="proxy-url">${purl}</span> <button class="btn btn-sm copy-cfg" data-copy="${escAttr(purl)}" style="font-size:10px">复制</button></td><td><button class="btn btn-primary btn-sm edit-cfg">编辑</button> <button class="btn btn-danger btn-sm del-cfg">删除</button></td></tr>`}).join('')})}
+el('configTable').querySelector('tbody').addEventListener('click',e=>{const tr=e.target.closest('tr');if(!tr)return;const id=parseInt(tr.dataset.id);if(e.target.closest('.del-cfg')){if(!confirm('确定删除？'))return;fetch('/api/config/delete/'+id,{method:'DELETE'}).then(loadConfigs)}else if(e.target.closest('.edit-cfg')){editConfig(id,tr.dataset.code,tr.dataset.name,tr.dataset.target)}else if(e.target.closest('.copy-cfg')){const btn=e.target.closest('.copy-cfg');const text=btn.dataset.copy;if(navigator.clipboard){navigator.clipboard.writeText(text)}else{const ta=document.createElement('textarea');ta.value=text;ta.style.cssText='position:fixed;left:-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta)}btn.textContent='已复制';setTimeout(()=>btn.textContent='复制',1200)}});
+function genCode(){return Array.from({length:6},()=>'abcdefghijklmnopqrstuvwxyz0123456789'[Math.random()*36|0]).join('')}
+function openAddModal(){el('modalTitle').textContent='新增代理配置';el('cfgId').value='';el('cfgCode').value=genCode();el('cfgName').value='';el('cfgTarget').value='';el('configModal').classList.add('show')}
+function editConfig(id,code,name,target){el('modalTitle').textContent='编辑代理配置';el('cfgId').value=id;el('cfgCode').value=code;el('cfgName').value=name;el('cfgTarget').value=target.replace(/^https?:\/\//,'');el('configModal').classList.add('show')}
+el('configModal').addEventListener('click',e=>{if(e.target===el('configModal'))el('configModal').classList.remove('show')});
+el('configForm').addEventListener('submit',e=>{e.preventDefault();const id=el('cfgId').value;let url=el('cfgTarget').value.trim();if(!/^https?:\/\//i.test(url))url='https://'+url;const data={proxyCode:el('cfgCode').value,proxyName:el('cfgName').value,targetUrl:url};if(id){data.id=parseInt(id);fetch('/api/config/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(()=>{el('configModal').classList.remove('show');loadConfigs()})}else{fetch('/api/config/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(()=>{el('configModal').classList.remove('show');loadConfigs()})}});
+
+// ===== Utils =====
+function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=String(s);return d.innerHTML}
+function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;')}
+function fmtN(n){if(!n)return'0';if(n>=1e6)return(n/1e6).toFixed(1)+'M';if(n>=1e3)return(n/1e3).toFixed(1)+'K';return String(n)}
+function syntaxHL(json){try{if(typeof json==='string')json=JSON.parse(json);return JSON.stringify(json,null,2).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"([^"]+)":/g,'<span class="jk">"$1"</span>:').replace(/: "([^"]*?)"/g,': <span class="js">"$1"</span>').replace(/: (\d+\.?\d*)/g,': <span class="jn">$1</span>').replace(/: (true|false)/g,': <span class="jb">$1</span>').replace(/: (null)/g,': <span class="jnl">null</span>')}catch(e){return esc(String(json))}}
+
+setInterval(()=>{if(curPage==='logs'&&!selId)loadList()},15000);
+init();
+</script>
+</body>
+</html>

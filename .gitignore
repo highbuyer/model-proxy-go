@@ -1,0 +1,9 @@
+# Binaries
+model-proxy
+model-proxy-go
+
+# Data
+data/
+
+# OMC internal state
+.omc/
