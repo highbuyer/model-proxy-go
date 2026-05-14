@@ -81,7 +81,11 @@ func Handler() http.HandlerFunc {
 			targetUrl += "?" + r.URL.RawQuery
 		}
 
-		target, _ := url.Parse(strings.TrimRight(config.TargetUrl, "/"))
+		target, err := url.Parse(strings.TrimRight(config.TargetUrl, "/"))
+	if err != nil || target == nil || target.Host == "" {
+		http.Error(w, "Bad Gateway: invalid target URL", http.StatusBadGateway)
+		return
+	}
 
 		// 收集目标 headers
 		targetHeaders := make(map[string]string)
@@ -187,8 +191,12 @@ func Handler() http.HandlerFunc {
 			})
 
 			// 包装 body 以捕获响应内容
+			body := resp.Body
+			if body == nil {
+				body = io.NopCloser(strings.NewReader(""))
+			}
 			resp.Body = &captureReader{
-				ReadCloser: resp.Body,
+				ReadCloser: body,
 				buf:        &responseBody,
 				onFirstByte: func() {
 					mu.Lock()

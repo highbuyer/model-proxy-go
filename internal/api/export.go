@@ -145,9 +145,11 @@ func extractTextContent(content json.RawMessage) string {
 	return ""
 }
 
-// parseSSEResponse 解析 SSE 事件流，提取 assistant 文本
+// parseSSEResponse 解析 SSE 事件流，提取 assistant 文本（含 thinking）
 func parseSSEResponse(sseText string) string {
 	var textParts []string
+	var thinkingParts []string
+
 	scanner := bufio.NewScanner(strings.NewReader(sseText))
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -158,18 +160,33 @@ func parseSSEResponse(sseText string) string {
 		var event struct {
 			Type  string `json:"type"`
 			Delta struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				Thinking string `json:"thinking"`
 			} `json:"delta"`
 		}
 		if json.Unmarshal([]byte(data), &event) != nil {
 			continue
 		}
-		if event.Type == "content_block_delta" && event.Delta.Type == "text_delta" {
-			textParts = append(textParts, event.Delta.Text)
+		switch event.Type {
+		case "content_block_delta":
+			switch event.Delta.Type {
+			case "text_delta":
+				textParts = append(textParts, event.Delta.Text)
+			case "thinking_delta":
+				thinkingParts = append(thinkingParts, event.Delta.Thinking)
+			}
 		}
 	}
-	return strings.Join(textParts, "")
+
+	var result strings.Builder
+	if len(thinkingParts) > 0 {
+		result.WriteString("[思考]\n")
+		result.WriteString(strings.Join(thinkingParts, ""))
+		result.WriteString("\n[/思考]\n\n")
+	}
+	result.WriteString(strings.Join(textParts, ""))
+	return result.String()
 }
 
 func truncate(s string, maxLen int) string {
