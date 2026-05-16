@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +36,7 @@ var proxyTransport = &http.Transport{
 	MaxConnsPerHost:       50,
 	IdleConnTimeout:       90 * time.Second,
 	TLSHandshakeTimeout:   10 * time.Second,
-	ResponseHeaderTimeout: 120 * time.Second, // 等待目标响应头的超时
+	ResponseHeaderTimeout: 180 * time.Second, // 等待目标响应头的超时（首字节）
 	ExpectContinueTimeout: 1 * time.Second,
 
 	// TLS 配置 — 使用 Go 默认的 TLS 设置（TLS 1.2+，系统 CA 池）
@@ -45,6 +46,10 @@ var proxyTransport = &http.Transport{
 }
 
 const proxyRequestTimeout = 300 * time.Second
+
+// maxCaptureBytes 是 captureReader 缓存响应正文的上限。超过后只追加 TRUNCATED 标记。
+// SSE 长流可能产生几百 KB - 几 MB 的事件流，全量缓存会导致内存膨胀。
+const maxCaptureBytes = 1024 * 1024 // 1MB
 
 // Handler 创建代理 HTTP Handler
 func Handler() http.HandlerFunc {
@@ -87,10 +92,10 @@ func Handler() http.HandlerFunc {
 		return
 	}
 
-		// 收集目标 headers
+		// 收集目标 headers（按转发白名单过滤，与实际 Director 行为对齐）
 		targetHeaders := make(map[string]string)
 		for k, v := range r.Header {
-			if strings.EqualFold(k, "host") {
+			if !isHeaderForwardable(k) {
 				continue
 			}
 			targetHeaders[k] = strings.Join(v, ", ")
@@ -107,7 +112,7 @@ func Handler() http.HandlerFunc {
 			Path:         r.URL.Path,
 			TargetUrl:    targetUrl,
 			Status:       "processing",
-			Stream:        strings.Contains(r.Header.Get("Accept"), "text/event-stream"),
+			Stream:        extractStreamFlag(string(origBodyBytes)) || strings.Contains(r.Header.Get("Accept"), "text/event-stream"),
 			RequestChars: len(origBodyBytes),
 			Model:        extractModel(string(origBodyBytes)),
 		}
@@ -125,7 +130,7 @@ func Handler() http.HandlerFunc {
 			OrigHeaders:   origHeaders,
 			OrigBody:      sanitizeBody(string(origBodyBytes)),
 			TargetHeaders: targetHeaders,
-			TargetBody:    string(origBodyBytes),
+			TargetBody:    sanitizeBody(string(origBodyBytes)),
 		}
 
 		addLog(payload,models.LogEntry{
@@ -137,9 +142,13 @@ func Handler() http.HandlerFunc {
 			Details:   fmt.Sprintf("proxyCode=%s requestChars=%d stream=%v", proxyCode, len(origBodyBytes), summary.Stream),
 		})
 
-		// 保存初始状态
-		db.InsertRequest(summary, payload)
-		broadcastSummary(summary)
+		// 保存初始状态 — 全部异步，避免序列化大 body 阻塞转发
+		go func(s *models.RequestSummary, p *models.RequestPayload) {
+			sumJson, _ := json.Marshal(s)
+			payJson, _ := json.Marshal(p)
+			db.ExecInsertRequest(s.RequestId, s.StartTime, sumJson, payJson)
+			broadcastSummary(s)
+		}(summary, payload)
 
 		// 创建反向代理
 		proxy := httputil.NewSingleHostReverseProxy(target)
@@ -148,7 +157,7 @@ func Handler() http.HandlerFunc {
 		// 请求级超时：通过 context 控制上游请求的最大执行时间
 		reqCtx, reqCancel := context.WithTimeout(r.Context(), proxyRequestTimeout)
 		defer reqCancel()
-		*r = *r.WithContext(reqCtx)
+		r = r.WithContext(reqCtx)
 
 		proxy.Director = func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
@@ -163,7 +172,7 @@ func Handler() http.HandlerFunc {
 			req.URL.Path = joinedPath
 			req.URL.RawQuery = r.URL.RawQuery
 			for k, vs := range r.Header {
-				if strings.EqualFold(k, "host") {
+				if !isHeaderForwardable(k) {
 					continue
 				}
 				req.Header[k] = vs
@@ -264,8 +273,12 @@ func Handler() http.HandlerFunc {
 			Details:   fmt.Sprintf("statusCode=%d ttft=%dms", payload.StatusCode, summary.Ttft),
 		})
 
-		// 更新数据库
-		db.InsertRequest(summary, payload)
+		// 更新数据库 — 在主协程序列化，异步写 SQLite
+		finalSummaryJson, _ := json.Marshal(summary)
+		finalPayloadJson, _ := json.Marshal(payload)
+		go func(requestId string, startTime int64, sumJson, payJson []byte) {
+			db.ExecInsertRequest(requestId, startTime, sumJson, payJson)
+		}(summary.RequestId, summary.StartTime, finalSummaryJson, finalPayloadJson)
 		broadcastSummary(summary)
 	}
 }
@@ -284,17 +297,39 @@ func flattenHeaders(h http.Header) map[string]string {
 	return m
 }
 
-// 脱敏：移除 Authorization 等敏感头中的实际值
-func sanitizeBody(s string) string {
-	return s
+// sensitiveBodyPatterns 用于在请求/响应体里识别敏感值并脱敏，避免明文进 SQLite。
+// 覆盖：sk-/sess-/ghp-/eyJ 风格的密钥，以及 JSON 里 "api_key"/"token"/"secret"/"password"/"authorization" 字段值。
+var sensitiveBodyPatterns = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	// sk- / sess- / ghp- 等前缀的 token：保留前缀 + 前 6 个字符，剩余替换
+	{regexp.MustCompile(`\b(sk|sess|ghp|gho|ghu|ghs|ghr|pat)-([A-Za-z0-9_-]{6})[A-Za-z0-9_-]{6,}`), `${1}-${2}***[REDACTED]`},
+	// JWT 风格：eyJ... 三段式
+	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), `eyJ***[REDACTED-JWT]`},
+	// JSON 字段：api_key / apiKey / token / secret / password / authorization → 值脱敏
+	{regexp.MustCompile(`("(?i:api[_-]?key|token|secret|password|authorization|bearer)"\s*:\s*")[^"]{8,}(")`), `${1}***[REDACTED]${2}`},
 }
 
-// captureReader 在首次读取时触发回调
+// 脱敏请求/响应 body，把敏感字段值替换成 ***[REDACTED]
+func sanitizeBody(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	out := s
+	for _, p := range sensitiveBodyPatterns {
+		out = p.re.ReplaceAllString(out, p.repl)
+	}
+	return out
+}
+
+// captureReader 在首次读取时触发回调，并把响应正文 tee 一份到 buf 用于日志（受 maxCaptureBytes 上限保护）
 type captureReader struct {
 	io.ReadCloser
 	buf         *bytes.Buffer
 	onFirstByte func()
 	once        sync.Once
+	truncated   bool
 }
 
 func (c *captureReader) Read(p []byte) (int, error) {
@@ -304,8 +339,18 @@ func (c *captureReader) Read(p []byte) (int, error) {
 		}
 	})
 	n, err := c.ReadCloser.Read(p)
-	if n > 0 {
-		c.buf.Write(p[:n])
+	if n > 0 && !c.truncated {
+		remaining := maxCaptureBytes - c.buf.Len()
+		if remaining <= 0 {
+			c.buf.WriteString("\n...[TRUNCATED]")
+			c.truncated = true
+		} else if n <= remaining {
+			c.buf.Write(p[:n])
+		} else {
+			c.buf.Write(p[:remaining])
+			c.buf.WriteString("\n...[TRUNCATED]")
+			c.truncated = true
+		}
 	}
 	return n, err
 }
@@ -323,6 +368,51 @@ func broadcastSummary(s *models.RequestSummary) {
 var sensitiveHeaders = map[string]bool{
 	"authorization": true, "x-api-key": true, "api-key": true,
 	"cookie": true, "set-cookie": true, "x-auth-token": true,
+}
+
+// browserOnlyHeaders 是浏览器（含 WebView2）默认会发但 API 端点不需要的 header。
+// 转发它们经常触发上游 WAF，因为请求看起来像"浏览器跨源访问 API"而不是"API 客户端调用"。
+var browserOnlyHeaders = map[string]bool{
+	"origin":                    true,
+	"referer":                   true,
+	"cookie":                    true,
+	"dnt":                       true,
+	"upgrade-insecure-requests": true,
+	"priority":                  true,
+	"purpose":                   true,
+	"x-requested-with":          true,
+}
+
+// isHeaderForwardable 判断某 header 是否应转发给上游。
+// 过滤掉 Host、浏览器指纹类（Sec-Fetch-*、Sec-Ch-Ua-*）及上面的 browserOnlyHeaders。
+func isHeaderForwardable(name string) bool {
+	lk := strings.ToLower(name)
+	if lk == "host" {
+		return false
+	}
+	if browserOnlyHeaders[lk] {
+		return false
+	}
+	if strings.HasPrefix(lk, "sec-ch-ua") || strings.HasPrefix(lk, "sec-fetch-") {
+		return false
+	}
+	return true
+}
+
+// extractStreamFlag 解析请求体 JSON，取 stream 字段。
+// Anthropic / OpenAI SDK 用 body 里的 "stream":true 表达流式，不靠 Accept 头。
+func extractStreamFlag(body string) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		return false
+	}
+	if s, ok := parsed["stream"].(bool); ok {
+		return s
+	}
+	return false
 }
 
 func sanitizeHeaders(h map[string]string) map[string]string {

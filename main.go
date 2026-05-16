@@ -78,7 +78,7 @@ func main() {
 	server := &http.Server{
 		Addr:         "localhost:8089",
 		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
+		ReadTimeout:  60 * time.Second,
 		WriteTimeout: 600 * time.Second, // SSE 长时间流 + LLM 生成可能很长
 		IdleTimeout:  120 * time.Second,
 	}

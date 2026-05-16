@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -13,6 +15,25 @@ import (
 )
 
 var DB *sql.DB
+
+// configCache 给 ConfigByCode 做 TTL 缓存，避免每次代理请求都打一次 SQLite。
+// 配置变更（Add/Update/Delete）会立刻清缓存。
+type cachedConfig struct {
+	config    *models.ProxyConfig
+	expiresAt time.Time
+}
+
+var (
+	configCache    sync.Map
+	configCacheTTL = 30 * time.Second
+)
+
+func invalidateConfigCache() {
+	configCache.Range(func(k, _ interface{}) bool {
+		configCache.Delete(k)
+		return true
+	})
+}
 
 func Init(dbPath string) error {
 	dir := filepath.Dir(dbPath)
@@ -83,16 +104,28 @@ func ConfigList() ([]models.ProxyConfig, error) {
 }
 
 func ConfigByCode(code string) (*models.ProxyConfig, error) {
+	// 缓存命中
+	if v, ok := configCache.Load(code); ok {
+		cc := v.(cachedConfig)
+		if time.Now().Before(cc.expiresAt) {
+			return cc.config, nil
+		}
+		configCache.Delete(code)
+	}
+
 	var c models.ProxyConfig
 	err := DB.QueryRow(
 		"SELECT id, proxy_code, proxy_name, target_url, created_at, updated_at FROM proxy_config WHERE proxy_code = ?", code,
 	).Scan(&c.Id, &c.ProxyCode, &c.ProxyName, &c.TargetUrl, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
+		// 未命中也缓存一段时间，避免坏 code 反复打 DB
+		configCache.Store(code, cachedConfig{config: nil, expiresAt: time.Now().Add(configCacheTTL)})
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	configCache.Store(code, cachedConfig{config: &c, expiresAt: time.Now().Add(configCacheTTL)})
 	return &c, nil
 }
 
@@ -106,6 +139,7 @@ func ConfigAdd(c *models.ProxyConfig) error {
 	}
 	id, _ := result.LastInsertId()
 	c.Id = id
+	invalidateConfigCache()
 	return nil
 }
 
@@ -114,11 +148,17 @@ func ConfigUpdate(c *models.ProxyConfig) error {
 		"UPDATE proxy_config SET proxy_name = ?, target_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
 		c.ProxyName, c.TargetUrl, c.Id,
 	)
+	if err == nil {
+		invalidateConfigCache()
+	}
 	return err
 }
 
 func ConfigDelete(id int64) error {
 	_, err := DB.Exec("DELETE FROM proxy_config WHERE id = ?", id)
+	if err == nil {
+		invalidateConfigCache()
+	}
 	return err
 }
 
@@ -133,9 +173,14 @@ func InsertRequest(summary *models.RequestSummary, payload *models.RequestPayloa
 	if err != nil {
 		return err
 	}
-	_, err = DB.Exec(
+	return ExecInsertRequest(summary.RequestId, summary.StartTime, summaryJson, payloadJson)
+}
+
+// ExecInsertRequest 接受预序列化的 JSON，供异步调用使用
+func ExecInsertRequest(requestId string, startTime int64, summaryJson, payloadJson []byte) error {
+	_, err := DB.Exec(
 		"INSERT OR REPLACE INTO requests (request_id, timestamp, summary_json, payload_json) VALUES (?, ?, ?, ?)",
-		summary.RequestId, summary.StartTime, string(summaryJson), string(payloadJson),
+		requestId, startTime, string(summaryJson), string(payloadJson),
 	)
 	return err
 }
